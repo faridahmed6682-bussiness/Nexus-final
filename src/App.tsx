@@ -48,10 +48,11 @@ import {
   CheckCircle2,
   Flag,
   Share2,
-  FolderArchive
+  FolderArchive,
+  ScrollText
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { chatWithAI } from './lib/gemini';
+import { chatWithAI, KeyMetadata } from './lib/gemini';
 import { cn } from './lib/utils';
 import { PWAInstallButton } from './components/PWAInstallButton';
 import { OfflineIndicator } from './components/OfflineIndicator';
@@ -60,6 +61,7 @@ import { GitHubSyncModal } from './components/GitHubSyncModal';
 import { FirebaseModal } from './components/FirebaseModal';
 import { SettingsModal } from './components/SettingsModal';
 import { SecretsModal } from './components/SecretsModal';
+import { LogsModal } from './components/LogsModal';
 import { SidebarDrawer } from './components/SidebarDrawer';
 import { GoogleAIStudioCoderView } from './components/GoogleAIStudioCoderView';
 import { getLocalKeys } from './lib/secretsManager';
@@ -130,7 +132,9 @@ export default function App() {
   const [showFirebaseModal, setShowFirebaseModal] = useState(false);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [showSecretsModal, setShowSecretsModal] = useState(false);
+  const [showLogsModal, setShowLogsModal] = useState(false);
   const [activeKeysCount, setActiveKeysCount] = useState(0);
+  const [currentActiveKeyInfo, setCurrentActiveKeyInfo] = useState<KeyMetadata | null>(null);
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [currentSessionTitle, setCurrentSessionTitle] = useState('Live Canvas');
@@ -369,7 +373,17 @@ export default function App() {
             });
           }
         },
-        sessionId
+        sessionId,
+        (keyInfo) => {
+          setCurrentActiveKeyInfo(keyInfo);
+          setMessages(prev => {
+            const last = prev[prev.length - 1];
+            if (last && last.role === 'model') {
+              return [...prev.slice(0, -1), { ...last, keyInfo }];
+            }
+            return prev;
+          });
+        }
       );
     } catch (err: any) {
       console.error(err);
@@ -494,6 +508,10 @@ export default function App() {
           onOpenDrawer={() => setIsDrawerOpen(true)}
           onOpenSettings={() => setShowSettingsModal(true)}
           onOpenTools={() => setShowToolsModal(true)}
+          onOpenSecrets={() => setShowSecretsModal(true)}
+          onOpenLogs={() => setShowLogsModal(true)}
+          activeKeysCount={activeKeysCount}
+          currentActiveKeyInfo={currentActiveKeyInfo}
           activeMode={activeMode}
           setActiveMode={setActiveMode}
         />
@@ -509,6 +527,7 @@ export default function App() {
           onOpenGitHub={() => setShowGitHubModal(true)}
           onOpenFirebase={() => setShowFirebaseModal(true)}
           onOpenTools={() => setShowToolsModal(true)}
+          onOpenLogs={() => setShowLogsModal(true)}
           onTogglePreview={() => setShowCodePreview(!showCodePreview)}
           activeKeysCount={activeKeysCount}
         />
@@ -543,6 +562,12 @@ export default function App() {
             const keys = getLocalKeys();
             setActiveKeysCount(keys.filter(k => k.isActive).length);
           }}
+        />
+
+        <LogsModal
+          isOpen={showLogsModal}
+          onClose={() => setShowLogsModal(false)}
+          onOpenSecrets={() => setShowSecretsModal(true)}
         />
 
         <OfflineIndicator />
@@ -612,6 +637,16 @@ export default function App() {
                   {activeKeysCount}
                 </span>
               )}
+            </button>
+
+            {/* Logs Button */}
+            <button 
+              onClick={() => setShowLogsModal(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-rose-300 bg-slate-900 hover:bg-rose-950/40 rounded-lg transition-all border border-rose-500/30 hover:border-rose-500/60 shadow-sm"
+              title="সিস্টেম সমস্যা ও এরর লগ"
+            >
+              <ScrollText className="w-3.5 h-3.5 text-rose-400" />
+              <span className="hidden xs:inline">লগ</span>
             </button>
 
             {/* Preview Toggle */}
@@ -689,6 +724,22 @@ export default function App() {
                 "flex flex-col gap-2 max-w-[80%]",
                 m.role === 'user' ? "items-end" : "items-start"
               )}>
+                {m.role === 'model' && (
+                  <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-slate-400 mb-0.5">
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-sky-500/10 text-sky-300 font-medium border border-sky-500/25">
+                      🔑 {m.keyInfo?.keyName || (m.keyInfo?.isCustomKey ? 'Custom Secret Key' : 'Primary Studio Engine')}
+                    </span>
+                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-slate-800 text-slate-300 font-mono border border-slate-700/60">
+                      ⚡ {m.keyInfo?.model || 'gemini-3.1-flash-lite'}
+                    </span>
+                    {m.keyInfo?.isCustomKey && (
+                      <span className="text-emerald-400 font-medium text-[10px] flex items-center gap-1">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+                        কাস্টম কী
+                      </span>
+                    )}
+                  </div>
+                )}
                 <div className={cn(
                   "px-4 py-3 rounded-2xl text-sm leading-relaxed",
                   m.role === 'user' ? "bg-slate-800 text-white rounded-tr-none" : "bg-slate-900 border border-slate-800 rounded-tl-none"
@@ -809,6 +860,22 @@ export default function App() {
           )}
           <div ref={messagesEndRef} />
         </div>
+
+        {/* Error banner */}
+        {error && (
+          <div className="px-6 -mb-2 max-w-4xl mx-auto w-full">
+            <div className="p-3 bg-rose-500/10 border border-rose-500/25 rounded-2xl text-rose-300 text-xs flex items-center justify-between gap-3 shadow-lg">
+              <div className="flex-1 whitespace-pre-wrap">{error}</div>
+              <button
+                onClick={() => setShowLogsModal(true)}
+                className="px-2.5 py-1 bg-rose-500/20 hover:bg-rose-500/30 text-rose-200 border border-rose-500/30 rounded-lg font-bold text-[11px] flex-shrink-0 flex items-center gap-1.5 transition-all cursor-pointer"
+              >
+                <ScrollText className="w-3.5 h-3.5 text-rose-400" />
+                <span>লগ দেখুন</span>
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Input */}
         <div className="p-6 bg-gradient-to-t from-[#020617] via-[#020617] to-transparent">
@@ -1171,6 +1238,7 @@ export default function App() {
         onOpenGitHub={() => setShowGitHubModal(true)}
         onOpenFirebase={() => setShowFirebaseModal(true)}
         onOpenTools={() => setShowToolsModal(true)}
+        onOpenLogs={() => setShowLogsModal(true)}
         onTogglePreview={() => setShowCodePreview(!showCodePreview)}
         activeKeysCount={activeKeysCount}
       />
@@ -1205,6 +1273,12 @@ export default function App() {
           const keys = getLocalKeys();
           setActiveKeysCount(keys.filter(k => k.isActive).length);
         }}
+      />
+
+      <LogsModal
+        isOpen={showLogsModal}
+        onClose={() => setShowLogsModal(false)}
+        onOpenSecrets={() => setShowSecretsModal(true)}
       />
 
       <OfflineIndicator />

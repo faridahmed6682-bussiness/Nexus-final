@@ -14,7 +14,9 @@ import {
   loadSecrets, 
   saveSecrets, 
   testApiKey, 
-  getKeyPoolStatus 
+  getKeyPoolStatus,
+  getSystemLogs,
+  clearSystemLogs
 } from './server/apiOrchestrator.js';
 
 dotenv.config();
@@ -154,6 +156,24 @@ async function startServer() {
       const keys = await loadSecrets();
       const poolStatus = getKeyPoolStatus(keys);
       res.json({ pool: poolStatus, hasEnvGeminiKey: !!process.env.GEMINI_API_KEY });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // System Logs: Diagnostic logs for error tracking, key rotation & execution
+  app.get('/api/system-logs', (_req, res) => {
+    try {
+      res.json({ logs: getSystemLogs() });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.delete('/api/system-logs', (_req, res) => {
+    try {
+      clearSystemLogs();
+      res.json({ success: true, message: 'লগ মুছে ফেলা হয়েছে' });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }

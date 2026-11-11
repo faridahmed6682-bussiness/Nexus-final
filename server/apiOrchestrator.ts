@@ -27,6 +27,44 @@ interface KeyRuntimeStats {
 
 const keyStatsMap = new Map<string, KeyRuntimeStats>();
 
+export interface SystemLogEntry {
+  id: string;
+  timestamp: number;
+  level: 'error' | 'warn' | 'info' | 'success';
+  category: 'auth' | 'rate_limit' | 'rotation' | 'execution' | 'network';
+  keyName?: string;
+  provider?: string;
+  model?: string;
+  message: string;
+  details?: string;
+}
+
+const systemLogs: SystemLogEntry[] = [];
+const MAX_LOGS = 200;
+
+export function addSystemLog(log: Omit<SystemLogEntry, 'id' | 'timestamp'>) {
+  const entry: SystemLogEntry = {
+    id: `log_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+    timestamp: Date.now(),
+    ...log
+  };
+  systemLogs.unshift(entry);
+  if (systemLogs.length > MAX_LOGS) {
+    systemLogs.pop();
+  }
+}
+
+export function getSystemLogs(): SystemLogEntry[] {
+  return systemLogs;
+}
+
+export function clearSystemLogs(): void {
+  systemLogs.length = 0;
+}
+
+// Track last successful responding key so Nexus prioritizes it on subsequent turns
+let lastSuccessfulKeyId: string | null = null;
+
 const SECRETS_FILE = path.resolve(process.cwd(), '.secrets.json');
 
 // Normalize any model name according to active @google/genai guidelines
@@ -186,6 +224,14 @@ export function selectBestKey(
 
   const pool = underRpmKeys.length > 0 ? underRpmKeys : readyKeys;
 
+  // 1. Sticky Key: Try to use the last successful key first
+  if (lastSuccessfulKeyId && !excludeKeyIds.has(lastSuccessfulKeyId)) {
+    const preferredKey = pool.find(k => k.id === lastSuccessfulKeyId);
+    if (preferredKey) {
+      return { key: preferredKey, reason: 'গতবারের সফল কী অগ্রাধিকার পেয়েছে (Sticky Last Key)' };
+    }
+  }
+
   // Pick the key with lowest requests in the sliding 60s window (least loaded)
   pool.sort((a, b) => {
     const statsA = getOrCreateStats(a.id);
@@ -198,6 +244,7 @@ export function selectBestKey(
 
 // Record successful request on key
 export function recordKeySuccess(keyId: string) {
+  lastSuccessfulKeyId = keyId;
   const stats = getOrCreateStats(keyId);
   const now = Date.now();
   stats.timestamps.push(now);
@@ -524,8 +571,23 @@ MANDATORY WEBSITE REPLICATION GUIDELINES:
     !k.apiKey.startsWith('sk-or-v1-b600f02324')
   );
 
+  if (activePool.length === 0) {
+    addSystemLog({
+      level: 'error',
+      category: 'auth',
+      message: 'রিকোয়েস্ট বাতিল: কোনো সচল সিক্রেট কী পাওয়া যায়নি। প্রাইমারি ইঞ্জিন নিষ্ক্রিয় রাখা হয়েছে।'
+    });
+    sendEvent({
+      type: "error",
+      error: "⚠️ কোনো সচল সিক্রেট কী পাওয়া যায়নি! নেক্সাস এখন শুধুমাত্র আপনার সিক্রেট কী থেকে পরিচালিত হয় (প্রাইমারি ইঞ্জিন বন্ধ রয়েছে)। অনুগ্রহ করে উপরের 🔑 (API Keys) মেনুতে আপনার Google AI Studio অথবা OpenRouter API কী যুক্ত করুন।",
+      isAuthError: true
+    });
+    res.end();
+    return;
+  }
+
   const excludedKeyIds = new Set<string>();
-  const maxAttempts = Math.max(activePool.length, 1) + 1; // pool attempts + fallback
+  const maxAttempts = activePool.length;
   let attempts = 0;
   let succeeded = false;
 
@@ -537,9 +599,18 @@ MANDATORY WEBSITE REPLICATION GUIDELINES:
 
     if (key) {
       excludedKeyIds.add(key.id);
+      const activeModel = key.provider === 'gemini' ? normalizeModelName('gemini', key.model) : (key.model || 'default');
+      sendEvent({
+        type: "key_active",
+        keyId: key.id,
+        keyName: key.name,
+        provider: key.provider,
+        model: activeModel,
+        isCustomKey: true
+      });
       sendEvent({
         type: "action",
-        action: `Routing via ${key.name} (${key.provider.toUpperCase()} • ${key.model})...`
+        action: `Routing via ${key.name} (${key.provider.toUpperCase()} • ${activeModel})...`
       });
 
       try {
@@ -599,6 +670,14 @@ MANDATORY WEBSITE REPLICATION GUIDELINES:
           }
 
           recordKeySuccess(key.id);
+          addSystemLog({
+            level: 'success',
+            category: 'execution',
+            keyName: key.name,
+            provider: key.provider,
+            model: targetModel,
+            message: `✓ Success: ${key.name} responded successfully (${targetModel}). Saved as sticky key for next turn.`
+          });
           const deployed = await autoDeployWebsiteFromText(fullText, sessionId);
           if (deployed.success) {
             const previewUrl = deployed.url || "/projects/index.html";
@@ -611,7 +690,15 @@ MANDATORY WEBSITE REPLICATION GUIDELINES:
               timestamp: Date.now() 
             });
           }
-          sendEvent({ type: "done", fullText, activeKeyId: key.id });
+          sendEvent({ 
+            type: "done", 
+            fullText, 
+            activeKeyId: key.id,
+            keyName: key.name,
+            provider: key.provider,
+            model: targetModel,
+            isCustomKey: true
+          });
           succeeded = true;
           break;
         } 
@@ -627,6 +714,14 @@ MANDATORY WEBSITE REPLICATION GUIDELINES:
           );
 
           recordKeySuccess(key.id);
+          addSystemLog({
+            level: 'success',
+            category: 'execution',
+            keyName: key.name,
+            provider: key.provider,
+            model: key.model || 'google/gemini-2.0-flash-lite:free',
+            message: `✓ Success: ${key.name} (OpenRouter) responded successfully. Saved as sticky key for next turn.`
+          });
           const deployed = await autoDeployWebsiteFromText(fullText, sessionId);
           if (deployed.success) {
             const previewUrl = deployed.url || "/projects/index.html";
@@ -639,7 +734,15 @@ MANDATORY WEBSITE REPLICATION GUIDELINES:
               timestamp: Date.now() 
             });
           }
-          sendEvent({ type: "done", fullText, activeKeyId: key.id });
+          sendEvent({ 
+            type: "done", 
+            fullText, 
+            activeKeyId: key.id,
+            keyName: key.name,
+            provider: key.provider,
+            model: key.model || 'google/gemini-2.0-flash-lite:free',
+            isCustomKey: true
+          });
           succeeded = true;
           break;
         } 
@@ -655,6 +758,14 @@ MANDATORY WEBSITE REPLICATION GUIDELINES:
           );
 
           recordKeySuccess(key.id);
+          addSystemLog({
+            level: 'success',
+            category: 'execution',
+            keyName: key.name,
+            provider: key.provider,
+            model: key.model || 'grok-2-latest',
+            message: `✓ Success: ${key.name} (Grok) responded successfully. Saved as sticky key for next turn.`
+          });
           const deployed = await autoDeployWebsiteFromText(fullText, sessionId);
           if (deployed.success) {
             const previewUrl = deployed.url || "/projects/index.html";
@@ -667,7 +778,15 @@ MANDATORY WEBSITE REPLICATION GUIDELINES:
               timestamp: Date.now() 
             });
           }
-          sendEvent({ type: "done", fullText, activeKeyId: key.id });
+          sendEvent({ 
+            type: "done", 
+            fullText, 
+            activeKeyId: key.id,
+            keyName: key.name,
+            provider: key.provider,
+            model: key.model || 'grok-2-latest',
+            isCustomKey: true
+          });
           succeeded = true;
           break;
         }
@@ -680,6 +799,15 @@ MANDATORY WEBSITE REPLICATION GUIDELINES:
         const isAuthError = err.status === 401 || err.code === 401 || err.message?.includes("401") || err.message?.includes("API key not valid") || err.message?.includes("UNAUTHENTICATED") || err.message?.includes("User not found") || err.message?.includes("ACCESS_TOKEN_TYPE_UNSUPPORTED");
 
         if (isAuthError) {
+          addSystemLog({
+            level: 'error',
+            category: 'auth',
+            keyName: key.name,
+            provider: key.provider,
+            model: key.model,
+            message: `❌ ${key.name}: Invalid API Key (401 Unauthorized / Access Token Unsupported). Key disabled.`,
+            details: err.message
+          });
           key.isActive = false;
           loadSecrets().then((allSecrets) => {
             const existing = allSecrets.find(k => k.id === key.id);
@@ -705,6 +833,13 @@ MANDATORY WEBSITE REPLICATION GUIDELINES:
               saveSecrets(allSecrets).catch(() => {});
             }
           }).catch(() => {});
+          addSystemLog({
+            level: 'warn',
+            category: 'rotation',
+            keyName: key.name,
+            provider: key.provider,
+            message: `⚡ Auto-healed ${key.name} from ${oldModel} to high-quota Gemini 3.1 Flash Lite (1,500 RPD).`
+          });
           sendEvent({
             type: "action",
             action: `⚡ Auto-healed ${key.name} from ${oldModel} to high-quota Gemini 3.1 Flash Lite (1,500 RPD).`
@@ -713,6 +848,14 @@ MANDATORY WEBSITE REPLICATION GUIDELINES:
         
         // Put key in short cooldown so next key in pool is tried
         if (!isAuthError) {
+          addSystemLog({
+            level: 'warn',
+            category: isQuotaExceeded ? 'rate_limit' : 'execution',
+            keyName: key.name,
+            provider: key.provider,
+            message: `⚠️ ${key.name} failed (${is429 ? 'Rate limit / 429' : err.message || 'Error'}). Rotating to next healthy key...`,
+            details: err.message
+          });
           recordKeyCooldown(key.id, isQuotaExceeded ? 60 : 15, err.message);
           sendEvent({
             type: "action",
@@ -728,102 +871,28 @@ MANDATORY WEBSITE REPLICATION GUIDELINES:
         // Continue loop to next key!
       }
     } else {
-      // No suitable user key available or all in cooldown; fallback to default server Gemini
+      addSystemLog({
+        level: 'warn',
+        category: 'rotation',
+        message: 'পুল থেকে আর কোনো সক্রিয় ও প্রস্তুত সিক্রেট কী পাওয়া যায়নি।'
+      });
       break;
     }
   }
 
-  // Final fallback to default server Gemini if no custom keys succeeded
+  // Strict User Policy: Primary AI Studio engine is completely removed/disabled.
+  // Responses MUST only come from user's secret keys.
   if (!succeeded) {
-    if (!process.env.GEMINI_API_KEY) {
-      sendEvent({
-        type: "error",
-        error: "কোনো কার্যকর API Key পাওয়া যায়নি। অনুগ্রহ করে উপরের 🔑 (API Keys) মেনুতে ক্লিক করে আপনার Google AI Studio API Key (AIzaSy...) যুক্ত করুন।",
-        isAuthError: true
-      });
-      res.end();
-      return;
-    }
-
-    sendEvent({
-      type: "action",
-      action: "Connecting through Primary Nexus AI Engine (Default Google AI Studio)..."
+    addSystemLog({
+      level: 'error',
+      category: 'execution',
+      message: 'পুলের সমস্ত সিক্রেট কী ব্যর্থ হয়েছে বা রেট লিমিটে পড়েছে। প্রাইমারি ইঞ্জিন বন্ধ রয়েছে।'
     });
-
-    try {
-      const defaultAi = new GoogleGenAI({
-        apiKey: process.env.GEMINI_API_KEY,
-        httpOptions: { headers: { "User-Agent": "aistudio-build" } }
-      });
-      const chat = defaultAi.chats.create({
-        model: "gemini-3.1-flash-lite",
-        config: {
-          systemInstruction: getNexusSystemInstruction(mode),
-          tools: [{ functionDeclarations: serverTools }]
-        },
-        history
-      });
-
-      let currentResult = await chat.sendMessageStream({ message: lastMessage });
-      let fullText = "";
-
-      while (true) {
-        const functionCalls: any[] = [];
-        for await (const chunk of currentResult) {
-          if (chunk.text) {
-            fullText += chunk.text;
-            sendEvent({ type: "text", text: fullText });
-          }
-          if (chunk.functionCalls && chunk.functionCalls.length > 0) {
-            functionCalls.push(...chunk.functionCalls);
-          }
-        }
-
-        if (functionCalls.length === 0) break;
-
-        const toolResponses = await Promise.all(
-          functionCalls.map(async (call) => {
-            if (!call.name) return null;
-            const toolResult = await executeServerTool(call.name, call.args, (action) => {
-              sendEvent({ type: "action", action });
-            });
-            if (call.name === "generateImage" && toolResult.imageUrl) {
-              sendEvent({ type: "image", imageUrl: toolResult.imageUrl });
-            }
-            return {
-              functionResponse: {
-                name: call.name,
-                response: { output: toolResult }
-              }
-            };
-          })
-        );
-
-        const validResponses = toolResponses.filter(Boolean);
-        currentResult = await chat.sendMessageStream({ message: validResponses as any });
-      }
-
-      const deployed = await autoDeployWebsiteFromText(fullText, sessionId);
-      if (deployed.success) {
-        const previewUrl = deployed.url || "/projects/index.html";
-        sendEvent({ type: "action", action: `✓ Website generated & saved (${previewUrl})! Live Preview ready.` });
-        sendEvent({ 
-          type: "preview_ready", 
-          url: previewUrl, 
-          sessionId,
-          html: deployed.html,
-          timestamp: Date.now() 
-        });
-      }
-      sendEvent({ type: "done", fullText, isFallback: true });
-    } catch (err: any) {
-      console.error("Default engine failure:", err);
-      sendEvent({
-        type: "error",
-        error: err.message || "All API keys in pool and default engine were unavailable.",
-        is429: err.message?.includes("429")
-      });
-    }
+    sendEvent({
+      type: "error",
+      error: "⚠️ আপনার যুক্ত করা সমস্ত সিক্রেট কী ব্যর্থ হয়েছে বা রেট লিমিটে পড়েছে। নেক্সাস এখন শুধুমাত্র আপনার সিক্রেট কী থেকে পরিচালিত হয় (প্রাইমারি ইঞ্জিন স্থায়ীভাবে বন্ধ রাখা হয়েছে)। অনুগ্রহ করে হ্যামবার্গার ড্রয়ার থেকে 'লগ' বা 🔑 মেনুতে গিয়ে কীগুলোর স্থিতি ও এরর মেসেজ পরীক্ষা করুন।",
+      isAuthError: true
+    });
   }
 
   res.end();
