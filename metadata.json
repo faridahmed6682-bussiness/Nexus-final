@@ -1,0 +1,11 @@
+{
+  "name": "Nexus AI",
+  "description": "A production-ready AI assistant that builds websites and generates images, powered by Gemini 3.1.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API",
+    "AI Website Builder",
+    "Image Generation",
+    "Full-Stack Assistant"
+  ]
+}

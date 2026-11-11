@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<div class="bg-green-50 p-6 rounded-xl">
+  <h2 class="text-2xl font-bold text-green-800">FarmerField.pro.bd Inspired Clone</h2>
+  <ul class="mt-4 space-y-2 text-green-700">
+    <li>✅ ফার্মার প্রোফাইল ম্যানেজমেন্ট</li>
+    <li>✅ পণ্যের লিস্টিং/সার্চ (ছবি, দাম, স্টক)</li>
+    <li>✅ অর্ডার ট্র্যাকিং সিস্টেম</li>
+    <li>✅ পেমেন্ট গেটওয়ে ইন্টিগ্রেশন</li>
+    <li>✅ বাংলা/ইংলিশ ল্যাঙ্গুয়েজ সাপোর্ট</li>
+  </ul>
+</div>
+  <!-- PWA Service Worker Registration & Install Prompt (Auto-injected by Nexus AI) -->
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', function() {
+        navigator.serviceWorker.register('./sw.js').then(function(reg) {
+          console.log('Nexus PWA Service Worker registered:', reg.scope);
+        }).catch(function(err) {
+          console.log('SW registration note:', err);
+        });
+      });
+    }
+
+    // Global PWA Install Prompt Listener
+    let deferredInstallPrompt = null;
+    window.addEventListener('beforeinstallprompt', function(e) {
+      e.preventDefault();
+      deferredInstallPrompt = e;
+      window.dispatchEvent(new CustomEvent('pwa-installable'));
+      var installBtn = document.getElementById('nexus-pwa-install-btn');
+      if (installBtn) installBtn.style.display = 'inline-flex';
+    });
+
+    window.triggerPWAInstall = function() {
+      if (deferredInstallPrompt) {
+        deferredInstallPrompt.prompt();
+        deferredInstallPrompt.userChoice.then(function(choice) {
+          if (choice.outcome === 'accepted') {
+            console.log('User accepted PWA installation');
+          }
+          deferredInstallPrompt = null;
+        });
+      } else {
+        alert('অ্যাপটি ইনস্টল করতে ব্রাউজারের শেয়ার বা মেনু থেকে "Add to Home Screen" বা "Install" নির্বাচন করুন।');
+      }
+    };
+  </script>
